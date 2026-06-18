@@ -200,9 +200,17 @@ in {
         HF_HOME                    = "${cfg.dataDir}/.cache/huggingface";
         HF_HUB_CACHE               = "${cfg.dataDir}/.cache/huggingface/hub";
         VIRTUAL_ENV                = "${cfg.dataDir}/venv";
+      } // lib.optionalAttrs (cfg.gpuBackend == "vulkan") {
+        # Force ONLY the RADV (AMD) Vulkan ICD. The NixOS driver directory
+        # ships ICDs for every Mesa driver (freedreno/Turnip, panfrost, etc.);
+        # without pinning, llama-cpp's Vulkan backend tries them all, hits the
+        # wrong driver on the AMD render nodes, and falls back to llvmpipe (CPU).
+        VK_ICD_FILENAMES =
+          "/run/opengl-driver/share/vulkan/icd.d/radeon_icd.x86_64.json";
       } // lib.optionalAttrs (cfg.gpuBackend == "vulkan" && cfg.gpuDeviceIndex != null) {
-        # Restrict the Vulkan backend to the chosen GPU (e.g. the discrete
-        # 7900XTX rather than the integrated GPU).
+        # Restrict the Vulkan backend to the chosen GPU. With only RADV loaded,
+        # index 0 is typically the discrete 7900XTX and 1 the integrated 890M —
+        # confirm with `vulkaninfo --summary` (RADV-only) and set accordingly.
         GGML_VK_VISIBLE_DEVICES = toString cfg.gpuDeviceIndex;
       } // lib.optionalAttrs (cfg.gpuBackend == "rocm" && cfg.gpuDeviceIndex != null) {
         ROCR_VISIBLE_DEVICES = toString cfg.gpuDeviceIndex;
