@@ -145,9 +145,6 @@ in {
         HF_HOME                    = "${cfg.dataDir}/.cache/huggingface";
         HF_HUB_CACHE               = "${cfg.dataDir}/.cache/huggingface/hub";
         VIRTUAL_ENV                = "${cfg.dataDir}/venv";
-        UV_PYTHON                  = "${cfg.dataDir}/venv/bin/python";
-        ODYSSEUS_INSTALLER         = "uv";
-        UV_PYTHON_DOWNLOADS        = "never";
       } // cfg.extraEnv;
 
       serviceConfig = {
@@ -160,16 +157,20 @@ in {
         # everything in the immutable nixpkgs env, then adds the missing +
         # runtime packages on top. We run uvicorn from the venv python so all
         # of it is importable.
+        # The venv is built against the bare interpreter and only holds the
+        # bootstrap + runtime-installed packages. uvicorn/fastapi/etc. live in
+        # the immutable nixpkgs env (pythonEnv). So we run uvicorn FROM the
+        # nixpkgs env python and append the venv's site-packages to PYTHONPATH,
+        # making both sets importable in one interpreter.
         ExecStart = pkgs.writeShellScript "odysseus-start" ''
-          if [ -f "${cfg.dataDir}/venv/bin/activate" ]; then
-            source "${cfg.dataDir}/venv/bin/activate"
-          fi
+          VENV_SITE="${cfg.dataDir}/venv/lib/python3.12/site-packages"
+
           export PATH="${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${pkgs.llama-cpp}/bin:${pythonEnv}/bin:/run/current-system/sw/bin:$PATH"
-          export PYTHONPATH="${package}/lib/odysseus"
+          # app source + venv packages (bootstrap missing-from-nixpkgs + runtime)
+          export PYTHONPATH="${package}/lib/odysseus:$VENV_SITE"
           export VIRTUAL_ENV="${cfg.dataDir}/venv"
-          export UV_PYTHON="${cfg.dataDir}/venv/bin/python"
-          export UV_PYTHON_DOWNLOADS="never"
-          exec "${cfg.dataDir}/venv/bin/python" -m uvicorn app:app \
+
+          exec ${pythonEnv}/bin/python -m uvicorn app:app \
             --host ${cfg.host} \
             --port ${toString cfg.port}
         '';
@@ -207,11 +208,13 @@ in {
           ${bootstrapArgs} || \
           echo "WARNING: bootstrap package install failed (will retry next start)"
 
-        # First-time app setup: DB, data dirs, auth.json
+        # First-time app setup: DB, data dirs, auth.json.
+        # Run from the nixpkgs env python (has sqlalchemy/bcrypt/etc.) with
+        # the venv site-packages appended so any bootstrap deps are visible.
         if [ ! -f "${cfg.dataDir}/app.db" ]; then
           echo "Running first-time Odysseus setup..."
-          PYTHONPATH=${package}/lib/odysseus \
-            "${cfg.dataDir}/venv/bin/python" \
+          PYTHONPATH="${package}/lib/odysseus:${cfg.dataDir}/venv/lib/python3.12/site-packages" \
+            ${pythonEnv}/bin/python \
             ${package}/lib/odysseus/setup.py
         fi
       '';

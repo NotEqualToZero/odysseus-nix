@@ -1,10 +1,16 @@
-# Odysseus package — nixpkgs python3.withPackages, no uv2nix.
+# Odysseus package — nixpkgs python3.withPackages, no uv2nix, no patching.
 #
 # Core dependencies that exist in nixpkgs are baked into an immutable Python
-# environment here. Three packages missing from nixpkgs
+# environment here, including pip. Three packages missing from nixpkgs
 # (chromadb-client, faster-whisper, youtube-transcript-api) plus any runtime
-# cookbook installs (llama-cpp-python, etc.) are installed into a mutable uv
-# venv at <dataDir>/venv on first boot — see module.nix preStart.
+# cookbook installs (llama-cpp-python, etc.) are installed into a mutable
+# venv at <dataDir>/venv — see module.nix preStart.
+#
+# The upstream cookbook scripts run `python3 -m pip install` into the active
+# venv. Because pip is present in the env and $VIRTUAL_ENV points at the
+# mutable venv, those installs land in the venv unmodified — so the upstream
+# source needs NO patching. This keeps the packaging layer purely additive
+# for a clean upstream PR.
 #
 # Returns { package; pythonEnv; bootstrapPackages; }.
 
@@ -66,6 +72,16 @@ let
     # The `hf` CLI for cookbook model downloads
     huggingface-hub
 
+    # pip: lets the upstream cookbook scripts run `python3 -m pip install`
+    # into the active mutable venv without any source patching.
+    pip
+
+    # Testing
+    pytest
+    pytest-asyncio
+
+    # Test-only httpx2 shim (present in nixpkgs)
+    httpx2
   ];
 
   # Optional groups that DO exist in nixpkgs — added to the immutable env
@@ -86,44 +102,22 @@ let
     [ "chromadb-client" "youtube-transcript-api" ] ++
     lib.optionals (builtins.elem "whisper" extras) [ "faster-whisper" ];
 
-  # ---------------------------------------------------------------- #
-  # Cookbook script patches: pip -> uv pip targeting the venv         #
-  # ---------------------------------------------------------------- #
-  cookbookPatchScript = ''
-    echo "Patching cookbook scripts: pip -> uv pip..."
-    for f in \
-        routes/cookbook_routes.py \
-        cookbook_helpers.py \
-        src/cookbook_helpers.py \
-        routes/cookbook_helpers.py; do
-      target="$out/lib/odysseus/$f"
-      [ -f "$target" ] || continue
-      echo "  patching $f"
-      sed -i \
-        -e 's|python3 -m pip install --no-cache-dir --user --break-system-packages|uv pip install --python "$VIRTUAL_ENV/bin/python"|g' \
-        -e 's|python3 -m pip install --no-cache-dir|uv pip install --python "$VIRTUAL_ENV/bin/python"|g' \
-        -e 's|python3 -m pip install --user --break-system-packages|uv pip install --python "$VIRTUAL_ENV/bin/python"|g' \
-        -e 's|python3 -m pip install --user|uv pip install --python "$VIRTUAL_ENV/bin/python"|g' \
-        -e 's|python3 -m pip install|uv pip install --python "$VIRTUAL_ENV/bin/python"|g' \
-        "$target"
-    done
-  '';
-
   package = pkgs.stdenv.mkDerivation {
     pname   = "odysseus";
     version = "0-unstable";
     src     = odysseus;
 
-    nativeBuildInputs = [ pkgs.makeWrapper pkgs.gnused ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
     buildInputs       = [ pythonEnv ];
     dontBuild         = true;
 
+    # No cookbook patching — upstream scripts run unmodified. The scripts'
+    # `python3 -m pip install` works because pip is in pythonEnv and the
+    # service activates the mutable venv ($VIRTUAL_ENV) before running them.
     installPhase = ''
       mkdir -p $out/lib/odysseus $out/bin
       cp -r . $out/lib/odysseus/
       [ -f _env ] && cp _env $out/lib/odysseus/.env.example || true
-
-      ${cookbookPatchScript}
 
       makeWrapper ${pythonEnv}/bin/python $out/bin/odysseus \
         --add-flags "-m uvicorn app:app" \
