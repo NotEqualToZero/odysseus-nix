@@ -34,10 +34,52 @@ let
   bootstrapArgs = lib.concatStringsSep " "
     (map lib.escapeShellArg bootstrapPackages);
 
+  # llama-cpp build selected by cfg.gpuBackend:
+  #   "cpu"    — nixpkgs default, CPU only
+  #   "vulkan" — Vulkan backend (works well on the 7900XTX, sidesteps the
+  #              ROCm/HSA enumeration problems on Strix Point APUs)
+  #   "rocm"   — HIP/ROCm backend (only if ROCm enumerates the GPU)
+  llamaCpp =
+    if cfg.gpuBackend == "vulkan" then
+      pkgs.llama-cpp.override { vulkanSupport = true; }
+    else if cfg.gpuBackend == "rocm" then
+      pkgs.llama-cpp.override { rocmSupport = true; }
+    else
+      pkgs.llama-cpp;
+
 in {
 
   options.services.odysseus = {
     enable = lib.mkEnableOption "Odysseus AI assistant UI";
+
+    gpuBackend = lib.mkOption {
+      type        = lib.types.enum [ "cpu" "vulkan" "rocm" ];
+      default     = "cpu";
+      description = ''
+        GPU backend for the bundled llama-cpp (llama-server) used by the
+        Cookbook to serve models.
+          "cpu"    — CPU only (default).
+          "vulkan" — Vulkan backend. Recommended for AMD GPUs on new APU
+                     platforms (e.g. Strix Point) where ROCm/HSA fails to
+                     enumerate. Works well on RDNA3 cards like the 7900XTX.
+          "rocm"   — HIP/ROCm backend. Only use if `rocminfo` successfully
+                     lists your GPU.
+      '';
+    };
+
+    gpuDeviceIndex = lib.mkOption {
+      type        = lib.types.nullOr lib.types.int;
+      default     = null;
+      example     = 0;
+      description = ''
+        Which GPU the Vulkan/ROCm backend should use, when more than one is
+        present (e.g. a discrete 7900XTX alongside an integrated GPU).
+        For Vulkan this sets GGML_VK_VISIBLE_DEVICES; for ROCm it sets
+        ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES. Find the index with
+        `vulkaninfo --summary` (Vulkan) or `rocminfo` (ROCm). null = let the
+        backend pick.
+      '';
+    };
 
     host = lib.mkOption {
       type        = lib.types.str;
@@ -124,6 +166,9 @@ in {
       group        = cfg.group;
       shell        = pkgs.bash;
       description  = "Odysseus service user";
+      # GPU access for the Vulkan/ROCm llama-server. /dev/dri/render* is
+      # render-group; /dev/kfd (ROCm) and card nodes are video/render.
+      extraGroups  = lib.optionals (cfg.gpuBackend != "cpu") [ "render" "video" ];
     };
 
     users.groups.${cfg.group} = {};
@@ -138,7 +183,7 @@ in {
       ln -sf ${pkgs.bash}/bin/bash /bin/bash
     '';
 
-    environment.systemPackages = [ pkgs.tmux pkgs.llama-cpp pkgs.uv ];
+    environment.systemPackages = [ pkgs.tmux llamaCpp pkgs.uv ];
 
     systemd.services.odysseus = {
       description = "Odysseus AI assistant UI";
@@ -155,6 +200,13 @@ in {
         HF_HOME                    = "${cfg.dataDir}/.cache/huggingface";
         HF_HUB_CACHE               = "${cfg.dataDir}/.cache/huggingface/hub";
         VIRTUAL_ENV                = "${cfg.dataDir}/venv";
+      } // lib.optionalAttrs (cfg.gpuBackend == "vulkan" && cfg.gpuDeviceIndex != null) {
+        # Restrict the Vulkan backend to the chosen GPU (e.g. the discrete
+        # 7900XTX rather than the integrated GPU).
+        GGML_VK_VISIBLE_DEVICES = toString cfg.gpuDeviceIndex;
+      } // lib.optionalAttrs (cfg.gpuBackend == "rocm" && cfg.gpuDeviceIndex != null) {
+        ROCR_VISIBLE_DEVICES = toString cfg.gpuDeviceIndex;
+        HIP_VISIBLE_DEVICES  = toString cfg.gpuDeviceIndex;
       } // cfg.extraEnv;
 
       serviceConfig = {
@@ -176,7 +228,7 @@ in {
           VENV_SITE="${cfg.dataDir}/venv/lib/python3.12/site-packages"
 
           export VIRTUAL_ENV="${cfg.dataDir}/venv"
-          export PATH="${cfg.dataDir}/venv/bin:${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${pkgs.llama-cpp}/bin:${pythonEnv}/bin:/run/current-system/sw/bin:$PATH"
+          export PATH="${cfg.dataDir}/venv/bin:${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${llamaCpp}/bin:${pythonEnv}/bin:/run/current-system/sw/bin:$PATH"
           export PYTHONPATH="${package}/lib/odysseus:$VENV_SITE"
 
           # Run uvicorn from the VENV python, not the nixpkgs-env python.
@@ -209,6 +261,18 @@ in {
         ProtectSystem   = "strict";
         ReadWritePaths  = [ cfg.dataDir "/tmp" ];
         ProtectHome     = true;
+
+        # GPU access for the Vulkan/ROCm llama-server. Only applied when a GPU
+        # backend is selected. PrivateDevices stays off so /dev/dri and /dev/kfd
+        # remain visible; the render nodes are allowed explicitly and the
+        # process is granted render/video supplementary groups.
+        PrivateDevices = lib.mkIf (cfg.gpuBackend != "cpu") false;
+        DeviceAllow = lib.mkIf (cfg.gpuBackend != "cpu") [
+          "/dev/dri rw"
+          "/dev/kfd rw"
+        ];
+        SupplementaryGroups =
+          lib.mkIf (cfg.gpuBackend != "cpu") [ "render" "video" ];
       };
 
       preStart = ''
