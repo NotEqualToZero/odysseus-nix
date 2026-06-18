@@ -76,12 +76,6 @@ let
     # into the active mutable venv without any source patching.
     pip
 
-    # Testing
-    pytest
-    pytest-asyncio
-
-    # Test-only httpx2 shim (present in nixpkgs)
-    httpx2
   ];
 
   # Optional groups that DO exist in nixpkgs — added to the immutable env
