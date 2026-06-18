@@ -2,7 +2,7 @@
   description = "Nix packaging for Odysseus AI assistant UI";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
     flake-compat = {
       url = "github:NixOS/flake-compat";
