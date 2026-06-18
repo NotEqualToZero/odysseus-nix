@@ -1,25 +1,18 @@
-# flake-compat shim.
-#
-# This lets non-flake consumers use the repository's flake outputs via plain
-# `import`. It reads flake.lock to fetch flake-compat at the pinned revision,
+# flake-compat shim — lets non-flake consumers use the flake outputs via
+# plain `import`. Reads flake.lock to fetch flake-compat at the pinned rev,
 # evaluates flake.nix, and returns its outputs.
 #
-# NixOS module usage WITHOUT flakes (e.g. in a channels-based config):
+# Non-flake NixOS module usage (channels-based config):
 #
-#   { ... }:
-#   {
-#     imports = [
-#       (import (fetchTarball "https://github.com/your-user/odysseus-nix/archive/main.tar.gz")).nixosModules.default
-#     ];
-#     services.odysseus.enable = true;
-#   }
+#   imports = [
+#     (import (fetchTarball
+#       "https://github.com/your-user/odysseus-nix/archive/main.tar.gz")
+#     ).nixosModules.default
+#   ];
+#   services.odysseus.enable = true;
 #
 # Or with a local checkout:
-#
 #   imports = [ (import /path/to/odysseus-nix).nixosModules.default ];
-#
-# The returned attrset is the flake's outputs, plus a `default` attribute
-# pointing at the current platform's default package.
 
 (import (
   let
