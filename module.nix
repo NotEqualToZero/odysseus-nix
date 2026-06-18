@@ -175,13 +175,19 @@ in {
         ExecStart = pkgs.writeShellScript "odysseus-start" ''
           VENV_SITE="${cfg.dataDir}/venv/lib/python3.12/site-packages"
 
-          # NOTE: we deliberately do NOT `source venv/bin/activate` here.
-          # Activating exports VIRTUAL_ENV/PATH in a way that cookbook tmux
-          # sessions inherit, which makes the runner scripts' `deactivate`
-          # call do real work and disrupts their environment. Instead we add
-          # the venv site-packages to PYTHONPATH directly — same import
-          # result, no activation side-effects leaking into child sessions.
-          export PATH="${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${pkgs.llama-cpp}/bin:${pythonEnv}/bin:/run/current-system/sw/bin:$PATH"
+          # We set VIRTUAL_ENV and put the venv bin first on PATH, but we do
+          # NOT `source venv/bin/activate`. Activation defines a `deactivate`
+          # shell function that the cookbook runner scripts call, and that
+          # interacts badly with detached tmux sessions. Setting VIRTUAL_ENV
+          # as a plain variable is enough for:
+          #   - the runner's `sys.prefix != sys.base_prefix` venv check to pass
+          #     (so it does a normal venv pip install, not a --user install,
+          #     which the nixpkgs Python rejects)
+          #   - pip/uv to target the mutable venv
+          # PYTHONPATH still carries the venv site-packages so the nixpkgs-env
+          # python used for uvicorn can import bootstrap + runtime packages.
+          export VIRTUAL_ENV="${cfg.dataDir}/venv"
+          export PATH="${cfg.dataDir}/venv/bin:${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${pkgs.llama-cpp}/bin:${pythonEnv}/bin:/run/current-system/sw/bin:$PATH"
           export PYTHONPATH="${package}/lib/odysseus:$VENV_SITE"
 
           exec ${pythonEnv}/bin/python -m uvicorn app:app \
@@ -215,11 +221,15 @@ in {
         mkdir -p ${cfg.dataDir}/logs
 
         # Create the mutable venv linked to the immutable nixpkgs env.
+        # --seed installs pip/setuptools into the venv so the cookbook runner
+        # scripts' `python3 -m pip install` works inside it. --system-site-
+        # packages lets it import everything from the nixpkgs base env too.
         if [ ! -d "${cfg.dataDir}/venv" ]; then
-          echo "Creating mutable venv (system-site-packages -> nixpkgs env)..."
+          echo "Creating mutable venv (system-site-packages -> nixpkgs env, seeded with pip)..."
           ${pkgs.uv}/bin/uv venv \
             --python ${pythonEnv}/bin/python \
             --system-site-packages \
+            --seed \
             ${cfg.dataDir}/venv
         fi
 
