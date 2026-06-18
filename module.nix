@@ -128,6 +128,16 @@ in {
 
     users.groups.${cfg.group} = {};
 
+    # Cookbook-generated runner scripts (model downloads + serves) use a
+    # hardcoded `#!/bin/bash` shebang. NixOS has no /bin/bash by default, so
+    # detached tmux sessions fail with "bad interpreter: No such file or
+    # directory" the instant they try to exec a runner. Providing the symlink
+    # fixes both downloads and serves without patching upstream scripts.
+    system.activationScripts.odysseusBinBash = ''
+      mkdir -p /bin
+      ln -sf ${pkgs.bash}/bin/bash /bin/bash
+    '';
+
     environment.systemPackages = [ pkgs.tmux pkgs.llama-cpp pkgs.uv ];
 
     systemd.services.odysseus = {
@@ -165,10 +175,14 @@ in {
         ExecStart = pkgs.writeShellScript "odysseus-start" ''
           VENV_SITE="${cfg.dataDir}/venv/lib/python3.12/site-packages"
 
+          # NOTE: we deliberately do NOT `source venv/bin/activate` here.
+          # Activating exports VIRTUAL_ENV/PATH in a way that cookbook tmux
+          # sessions inherit, which makes the runner scripts' `deactivate`
+          # call do real work and disrupts their environment. Instead we add
+          # the venv site-packages to PYTHONPATH directly — same import
+          # result, no activation side-effects leaking into child sessions.
           export PATH="${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${pkgs.llama-cpp}/bin:${pythonEnv}/bin:/run/current-system/sw/bin:$PATH"
-          # app source + venv packages (bootstrap missing-from-nixpkgs + runtime)
           export PYTHONPATH="${package}/lib/odysseus:$VENV_SITE"
-          export VIRTUAL_ENV="${cfg.dataDir}/venv"
 
           exec ${pythonEnv}/bin/python -m uvicorn app:app \
             --host ${cfg.host} \
