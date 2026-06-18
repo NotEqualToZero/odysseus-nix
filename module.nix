@@ -175,22 +175,19 @@ in {
         ExecStart = pkgs.writeShellScript "odysseus-start" ''
           VENV_SITE="${cfg.dataDir}/venv/lib/python3.12/site-packages"
 
-          # We set VIRTUAL_ENV and put the venv bin first on PATH, but we do
-          # NOT `source venv/bin/activate`. Activation defines a `deactivate`
-          # shell function that the cookbook runner scripts call, and that
-          # interacts badly with detached tmux sessions. Setting VIRTUAL_ENV
-          # as a plain variable is enough for:
-          #   - the runner's `sys.prefix != sys.base_prefix` venv check to pass
-          #     (so it does a normal venv pip install, not a --user install,
-          #     which the nixpkgs Python rejects)
-          #   - pip/uv to target the mutable venv
-          # PYTHONPATH still carries the venv site-packages so the nixpkgs-env
-          # python used for uvicorn can import bootstrap + runtime packages.
           export VIRTUAL_ENV="${cfg.dataDir}/venv"
           export PATH="${cfg.dataDir}/venv/bin:${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${pkgs.llama-cpp}/bin:${pythonEnv}/bin:/run/current-system/sw/bin:$PATH"
           export PYTHONPATH="${package}/lib/odysseus:$VENV_SITE"
 
-          exec ${pythonEnv}/bin/python -m uvicorn app:app \
+          # Run uvicorn from the VENV python, not the nixpkgs-env python.
+          # The venv is created with --system-site-packages so it can import
+          # all the core deps from the immutable nixpkgs env, AND because it's
+          # a real venv, `sys.prefix != sys.base_prefix` is true. Odysseus's
+          # cookbook helper checks exactly that to decide whether to pip-install
+          # into the venv vs. fall back to a `--user` install. nixpkgs Python
+          # disables user-site, so the --user path errors; running as the venv
+          # python makes Odysseus correctly choose the venv-install path.
+          exec "${cfg.dataDir}/venv/bin/python" -m uvicorn app:app \
             --host ${cfg.host} \
             --port ${toString cfg.port}
         '';
@@ -242,12 +239,12 @@ in {
           echo "WARNING: bootstrap package install failed (will retry next start)"
 
         # First-time app setup: DB, data dirs, auth.json.
-        # Run from the nixpkgs env python (has sqlalchemy/bcrypt/etc.) with
-        # the venv site-packages appended so any bootstrap deps are visible.
+        # Run from the venv python (system-site-packages gives it the core
+        # deps; being a venv keeps behaviour consistent with the main service).
         if [ ! -f "${cfg.dataDir}/app.db" ]; then
           echo "Running first-time Odysseus setup..."
           PYTHONPATH="${package}/lib/odysseus:${cfg.dataDir}/venv/lib/python3.12/site-packages" \
-            ${pythonEnv}/bin/python \
+            "${cfg.dataDir}/venv/bin/python" \
             ${package}/lib/odysseus/setup.py
         fi
       '';
