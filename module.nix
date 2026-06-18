@@ -178,6 +178,15 @@ in {
         EnvironmentFile = lib.mkIf (cfg.envFile != null) cfg.envFile;
         Restart         = "on-failure";
         RestartSec      = "5s";
+
+        # Cookbook launches model serves and downloads in detached tmux
+        # sessions. With the default KillMode=control-group, systemd reaps
+        # every process in the service cgroup — including those tmux sessions —
+        # which kills a running model serve. KillMode=process kills only the
+        # main uvicorn process on stop/restart, leaving the tmux sessions
+        # (and their llama-server children) alive.
+        KillMode = "process";
+
         NoNewPrivileges = true;
         PrivateTmp      = false;
         ProtectSystem   = "strict";
