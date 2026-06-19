@@ -72,12 +72,23 @@ in {
       default     = null;
       example     = 0;
       description = ''
-        Which GPU the Vulkan/ROCm backend should use, when more than one is
-        present (e.g. a discrete 7900XTX alongside an integrated GPU).
-        For Vulkan this sets GGML_VK_VISIBLE_DEVICES; for ROCm it sets
-        ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES. Find the index with
-        `vulkaninfo --summary` (Vulkan) or `rocminfo` (ROCm). null = let the
-        backend pick.
+        ROCm GPU index (ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES) when using
+        the "rocm" backend with multiple GPUs. For the "vulkan" backend, prefer
+        gpuPciId instead — it is far more reliable on mixed iGPU+dGPU systems.
+      '';
+    };
+
+    gpuPciId = lib.mkOption {
+      type        = lib.types.nullOr lib.types.str;
+      default     = null;
+      example     = "1002:744c";
+      description = ''
+        PCI vendor:device ID of the GPU to use with the Vulkan backend, e.g.
+        "1002:744c" for a Radeon RX 7900 XTX. Sets MESA_VK_DEVICE_SELECT so
+        RADV pins to exactly this card and ignores the integrated GPU. This
+        is the recommended way to select a GPU for Vulkan — index-based
+        selection can mis-pick or hang on systems with both an iGPU and a
+        discrete card. Find the ID with `lspci -nn | grep VGA`.
       '';
     };
 
@@ -207,11 +218,14 @@ in {
         # wrong driver on the AMD render nodes, and falls back to llvmpipe (CPU).
         VK_ICD_FILENAMES =
           "/run/opengl-driver/share/vulkan/icd.d/radeon_icd.x86_64.json";
-      } // lib.optionalAttrs (cfg.gpuBackend == "vulkan" && cfg.gpuDeviceIndex != null) {
-        # Restrict the Vulkan backend to the chosen GPU. With only RADV loaded,
-        # index 0 is typically the discrete 7900XTX and 1 the integrated 890M —
-        # confirm with `vulkaninfo --summary` (RADV-only) and set accordingly.
-        GGML_VK_VISIBLE_DEVICES = toString cfg.gpuDeviceIndex;
+      } // lib.optionalAttrs (cfg.gpuBackend == "vulkan" && cfg.gpuPciId != null) {
+        # Pin RADV to a specific GPU by PCI vendor:device ID. This is far more
+        # robust than index-based GGML_VK_VISIBLE_DEVICES: on mixed iGPU+dGPU
+        # systems the index filter can mis-select or hang during enumeration,
+        # whereas the PCI ID unambiguously selects the discrete card and skips
+        # the integrated GPU entirely. Find the ID with `lspci -nn` (e.g. the
+        # 7900XTX is 1002:744c).
+        MESA_VK_DEVICE_SELECT = cfg.gpuPciId;
       } // lib.optionalAttrs (cfg.gpuBackend == "rocm" && cfg.gpuDeviceIndex != null) {
         ROCR_VISIBLE_DEVICES = toString cfg.gpuDeviceIndex;
         HIP_VISIBLE_DEVICES  = toString cfg.gpuDeviceIndex;
