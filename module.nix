@@ -222,6 +222,7 @@ in {
           ${pythonEnv}/bin/python -m venv \
             --system-site-packages \
             ${cfg.dataDir}/venv
+          rm -f "${cfg.dataDir}/venv/lib/python3.12/EXTERNALLY-MANAGED"
           chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/venv
         fi
 
