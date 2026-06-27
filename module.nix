@@ -230,6 +230,7 @@ in {
         echo "Installing pinned bootstrap packages..."
         "${cfg.dataDir}/venv/bin/python" -m pip install \
           --break-system-packages \
+          --ignore-installed \
           --require-hashes \
           -r ${./requirements.lock}
 
@@ -237,6 +238,7 @@ in {
           echo "Installing faster-whisper..."
           "${cfg.dataDir}/venv/bin/python" -m pip install \
             --break-system-packages \
+            --ignore-installed \
             --require-hashes \
             -r ${./requirements-whisper.lock}
         ''}
