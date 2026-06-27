@@ -1,0 +1,18 @@
+{
+  "pins": {
+    "odysseus": {
+      "type": "Git",
+      "repository": {
+        "type": "GitHub",
+        "owner": "pewdiepie-archdaemon",
+        "repo": "odysseus"
+      },
+      "branch": "main",
+      "submodules": false,
+      "revision": "dd055ee6e36581ad8c9c539e02b5b9963fbac2a1",
+      "url": "https://github.com/pewdiepie-archdaemon/odysseus/archive/dd055ee6e36581ad8c9c539e02b5b9963fbac2a1.tar.gz",
+      "hash": "sha256-iwGtxXAaho8tN82TnSmaJ6YXnxMxKxJc2EcaR/cUkv4="
+    }
+  },
+  "version": 8
+}

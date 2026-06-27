@@ -1,21 +1,21 @@
 # Odysseus — NixOS module.
 #
-# Module factory: takes the pinned flake inputs and returns a module function
-# { config, pkgs, lib, ... }. flake.nix calls it; the flake-compat shim
-# (default.nix) exposes the same output to non-flake consumers.
+# Runs the Odysseus web UI as a systemd service.
 #
-# Core deps come from nixpkgs (immutable, via package.nix). Packages missing
-# from nixpkgs and all runtime cookbook installs live in a mutable uv venv at
-# <dataDir>/venv, created on first boot.
+# The odysseus source is pinned via npins (npins/sources.json). Override it
+# per-host with services.odysseus.src if you need a different commit.
+#
+# Backend model servers are NOT managed here — use backendPackages to put
+# binaries on PATH for the cookbook, or extraEnv to point at existing services.
 
-{ lib
-, odysseus
-}:
+{ odysseus }:  # pinned default source from npins, passed by default.nix
 
 { config, pkgs, lib, ... }:
 
 let
   cfg = config.services.odysseus;
+
+  effectiveSrc = if cfg.src != null then cfg.src else odysseus;
 
   moduleExtras =
     lib.optionals cfg.optionalDeps.whisper    [ "whisper"    ] ++
@@ -24,71 +24,36 @@ let
     lib.optionals cfg.optionalDeps.markitdown [ "markitdown" ];
 
   built = import ./package.nix {
-    inherit lib pkgs odysseus;
-    extras = moduleExtras;
+    inherit lib pkgs;
+    odysseus = effectiveSrc;
+    extras   = moduleExtras;
   };
 
-  inherit (built) package pythonEnv bootstrapPackages;
+  inherit (built) package pythonEnv;
 
-  # Space-separated list for the uv install command in preStart
-  bootstrapArgs = lib.concatStringsSep " "
-    (map lib.escapeShellArg bootstrapPackages);
-
-  # llama-cpp build selected by cfg.gpuBackend:
-  #   "cpu"    — nixpkgs default, CPU only
-  #   "vulkan" — Vulkan backend (works well on the 7900XTX, sidesteps the
-  #              ROCm/HSA enumeration problems on Strix Point APUs)
-  #   "rocm"   — HIP/ROCm backend (only if ROCm enumerates the GPU)
-  llamaCpp =
-    if cfg.gpuBackend == "vulkan" then
-      pkgs.llama-cpp.override { vulkanSupport = true; }
-    else if cfg.gpuBackend == "rocm" then
-      pkgs.llama-cpp.override { rocmSupport = true; }
-    else
-      pkgs.llama-cpp;
+  backendBinPaths = lib.concatStringsSep ":"
+    (map (p: "${p}/bin") cfg.backendPackages);
 
 in {
 
   options.services.odysseus = {
     enable = lib.mkEnableOption "Odysseus AI assistant UI";
 
-    gpuBackend = lib.mkOption {
-      type        = lib.types.enum [ "cpu" "vulkan" "rocm" ];
-      default     = "cpu";
-      description = ''
-        GPU backend for the bundled llama-cpp (llama-server) used by the
-        Cookbook to serve models.
-          "cpu"    — CPU only (default).
-          "vulkan" — Vulkan backend. Recommended for AMD GPUs on new APU
-                     platforms (e.g. Strix Point) where ROCm/HSA fails to
-                     enumerate. Works well on RDNA3 cards like the 7900XTX.
-          "rocm"   — HIP/ROCm backend. Only use if `rocminfo` successfully
-                     lists your GPU.
+    src = lib.mkOption {
+      type    = lib.types.nullOr lib.types.path;
+      default = null;
+      example = lib.literalExpression ''
+        pkgs.fetchFromGitHub {
+          owner = "pewdiepie-archdaemon";
+          repo  = "odysseus";
+          rev   = "abc1234";
+          hash  = "sha256-...";
+        }
       '';
-    };
-
-    gpuDeviceIndex = lib.mkOption {
-      type        = lib.types.nullOr lib.types.int;
-      default     = null;
-      example     = 0;
       description = ''
-        ROCm GPU index (ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES) when using
-        the "rocm" backend with multiple GPUs. For the "vulkan" backend, prefer
-        gpuPciId instead — it is far more reliable on mixed iGPU+dGPU systems.
-      '';
-    };
-
-    gpuPciId = lib.mkOption {
-      type        = lib.types.nullOr lib.types.str;
-      default     = null;
-      example     = "1002:744c";
-      description = ''
-        PCI vendor:device ID of the GPU to use with the Vulkan backend, e.g.
-        "1002:744c" for a Radeon RX 7900 XTX. Sets MESA_VK_DEVICE_SELECT so
-        RADV pins to exactly this card and ignores the integrated GPU. This
-        is the recommended way to select a GPU for Vulkan — index-based
-        selection can mis-pick or hang on systems with both an iGPU and a
-        discrete card. Find the ID with `lspci -nn | grep VGA`.
+        Override the Odysseus source. When null (default) the version pinned
+        in npins/sources.json is used. Set this to pin a specific commit
+        per-host without changing the shared pin.
       '';
     };
 
@@ -111,59 +76,66 @@ in {
     };
 
     user = lib.mkOption {
-      type        = lib.types.str;
-      default     = "odysseus";
-      description = "User account under which Odysseus runs.";
+      type    = lib.types.str;
+      default = "odysseus";
     };
 
     group = lib.mkOption {
-      type        = lib.types.str;
-      default     = "odysseus";
-      description = "Group account under which Odysseus runs.";
+      type    = lib.types.str;
+      default = "odysseus";
     };
 
     envFile = lib.mkOption {
       type        = lib.types.nullOr lib.types.path;
       default     = null;
-      description = ''
-        Path to a .env file containing secrets (API keys, passwords, etc.).
-        See the bundled .env.example for available options.
-      '';
+      description = "Path to a file containing secret environment variables (API keys, etc.).";
     };
 
     extraEnv = lib.mkOption {
       type    = lib.types.attrsOf lib.types.str;
       default = {};
       example = {
-        SEARXNG_INSTANCE = "http://localhost:8080";
-        OLLAMA_HOST      = "http://127.0.0.1:11434";
+        OLLAMA_BASE_URL = "http://127.0.0.1:11434";
+        OPENAI_API_BASE = "http://127.0.0.1:8080/v1";
+        OPENAI_API_KEY  = "sk-local";
       };
-      description = "Extra environment variables passed to the service.";
+      description = ''
+        Extra environment variables. Use to point Odysseus at model servers
+        already running on the system — Ollama, llama-server, vllm, etc.
+      '';
+    };
+
+    backendPackages = lib.mkOption {
+      type    = lib.types.listOf lib.types.package;
+      default = [];
+      example = lib.literalExpression "[ pkgs.llama-cpp ]";
+      description = ''
+        Packages placed on PATH inside the service so the Odysseus cookbook
+        can launch them on demand via tmux (llama-server, vllm, etc.).
+        GPU variants: pkgs.llama-cpp.override { vulkanSupport = true; }
+      '';
     };
 
     optionalDeps = {
       whisper = lib.mkOption {
-        type        = lib.types.bool;
-        default     = false;
-        description = ''
-          Install faster-whisper for local CPU/GPU speech-to-text.
-          (Installed into the mutable venv since it is not in nixpkgs.)
-        '';
+        type    = lib.types.bool;
+        default = false;
+        description = "Install faster-whisper for local speech-to-text (pinned in requirements-whisper.lock).";
       };
       duckduckgo = lib.mkOption {
-        type        = lib.types.bool;
-        default     = false;
-        description = "Install ddgs for DuckDuckGo search provider.";
+        type    = lib.types.bool;
+        default = false;
+        description = "Install ddgs for DuckDuckGo search.";
       };
       mupdf = lib.mkOption {
-        type        = lib.types.bool;
-        default     = false;
+        type    = lib.types.bool;
+        default = false;
         description = "Install PyMuPDF for PDF form-filling (AGPL-3.0).";
       };
       markitdown = lib.mkOption {
-        type        = lib.types.bool;
-        default     = false;
-        description = "Install markitdown for Office/EPUB text extraction.";
+        type    = lib.types.bool;
+        default = false;
+        description = "Install markitdown for Office/EPUB extraction.";
       };
     };
   };
@@ -177,24 +149,17 @@ in {
       group        = cfg.group;
       shell        = pkgs.bash;
       description  = "Odysseus service user";
-      # GPU access for the Vulkan/ROCm llama-server. /dev/dri/render* is
-      # render-group; /dev/kfd (ROCm) and card nodes are video/render.
-      extraGroups  = lib.optionals (cfg.gpuBackend != "cpu") [ "render" "video" ];
     };
 
     users.groups.${cfg.group} = {};
 
-    # Cookbook-generated runner scripts (model downloads + serves) use a
-    # hardcoded `#!/bin/bash` shebang. NixOS has no /bin/bash by default, so
-    # detached tmux sessions fail with "bad interpreter: No such file or
-    # directory" the instant they try to exec a runner. Providing the symlink
-    # fixes both downloads and serves without patching upstream scripts.
+    # Cookbook runner scripts use a hardcoded #!/bin/bash shebang.
     system.activationScripts.odysseusBinBash = ''
       mkdir -p /bin
       ln -sf ${pkgs.bash}/bin/bash /bin/bash
     '';
 
-    environment.systemPackages = [ pkgs.tmux llamaCpp pkgs.uv ];
+    environment.systemPackages = [ pkgs.tmux pkgs.uv ] ++ cfg.backendPackages;
 
     systemd.services.odysseus = {
       description = "Odysseus AI assistant UI";
@@ -211,24 +176,6 @@ in {
         HF_HOME                    = "${cfg.dataDir}/.cache/huggingface";
         HF_HUB_CACHE               = "${cfg.dataDir}/.cache/huggingface/hub";
         VIRTUAL_ENV                = "${cfg.dataDir}/venv";
-      } // lib.optionalAttrs (cfg.gpuBackend == "vulkan") {
-        # Force ONLY the RADV (AMD) Vulkan ICD. The NixOS driver directory
-        # ships ICDs for every Mesa driver (freedreno/Turnip, panfrost, etc.);
-        # without pinning, llama-cpp's Vulkan backend tries them all, hits the
-        # wrong driver on the AMD render nodes, and falls back to llvmpipe (CPU).
-        VK_ICD_FILENAMES =
-          "/run/opengl-driver/share/vulkan/icd.d/radeon_icd.x86_64.json";
-      } // lib.optionalAttrs (cfg.gpuBackend == "vulkan" && cfg.gpuPciId != null) {
-        # Pin RADV to a specific GPU by PCI vendor:device ID. This is far more
-        # robust than index-based GGML_VK_VISIBLE_DEVICES: on mixed iGPU+dGPU
-        # systems the index filter can mis-select or hang during enumeration,
-        # whereas the PCI ID unambiguously selects the discrete card and skips
-        # the integrated GPU entirely. Find the ID with `lspci -nn` (e.g. the
-        # 7900XTX is 1002:744c).
-        MESA_VK_DEVICE_SELECT = cfg.gpuPciId;
-      } // lib.optionalAttrs (cfg.gpuBackend == "rocm" && cfg.gpuDeviceIndex != null) {
-        ROCR_VISIBLE_DEVICES = toString cfg.gpuDeviceIndex;
-        HIP_VISIBLE_DEVICES  = toString cfg.gpuDeviceIndex;
       } // cfg.extraEnv;
 
       serviceConfig = {
@@ -237,30 +184,11 @@ in {
         Group            = cfg.group;
         WorkingDirectory = cfg.dataDir;
 
-        # The mutable venv is created with --system-site-packages so it sees
-        # everything in the immutable nixpkgs env, then adds the missing +
-        # runtime packages on top. We run uvicorn from the venv python so all
-        # of it is importable.
-        # The venv is built against the bare interpreter and only holds the
-        # bootstrap + runtime-installed packages. uvicorn/fastapi/etc. live in
-        # the immutable nixpkgs env (pythonEnv). So we run uvicorn FROM the
-        # nixpkgs env python and append the venv's site-packages to PYTHONPATH,
-        # making both sets importable in one interpreter.
         ExecStart = pkgs.writeShellScript "odysseus-start" ''
           VENV_SITE="${cfg.dataDir}/venv/lib/python3.12/site-packages"
-
           export VIRTUAL_ENV="${cfg.dataDir}/venv"
-          export PATH="${cfg.dataDir}/venv/bin:${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${llamaCpp}/bin:${pythonEnv}/bin:/run/current-system/sw/bin:$PATH"
+          export PATH="${cfg.dataDir}/venv/bin:${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${pythonEnv}/bin${lib.optionalString (cfg.backendPackages != []) ":${backendBinPaths}"}:/run/current-system/sw/bin:$PATH"
           export PYTHONPATH="${package}/lib/odysseus:$VENV_SITE"
-
-          # Run uvicorn from the VENV python, not the nixpkgs-env python.
-          # The venv is created with --system-site-packages so it can import
-          # all the core deps from the immutable nixpkgs env, AND because it's
-          # a real venv, `sys.prefix != sys.base_prefix` is true. Odysseus's
-          # cookbook helper checks exactly that to decide whether to pip-install
-          # into the venv vs. fall back to a `--user` install. nixpkgs Python
-          # disables user-site, so the --user path errors; running as the venv
-          # python makes Odysseus correctly choose the venv-install path.
           exec "${cfg.dataDir}/venv/bin/python" -m uvicorn app:app \
             --host ${cfg.host} \
             --port ${toString cfg.port}
@@ -269,32 +197,13 @@ in {
         EnvironmentFile = lib.mkIf (cfg.envFile != null) cfg.envFile;
         Restart         = "on-failure";
         RestartSec      = "5s";
-
-        # Cookbook launches model serves and downloads in detached tmux
-        # sessions. With the default KillMode=control-group, systemd reaps
-        # every process in the service cgroup — including those tmux sessions —
-        # which kills a running model serve. KillMode=process kills only the
-        # main uvicorn process on stop/restart, leaving the tmux sessions
-        # (and their llama-server children) alive.
-        KillMode = "process";
+        KillMode        = "process";
 
         NoNewPrivileges = true;
         PrivateTmp      = false;
         ProtectSystem   = "strict";
         ReadWritePaths  = [ cfg.dataDir "/tmp" ];
         ProtectHome     = true;
-
-        # GPU access for the Vulkan/ROCm llama-server. Only applied when a GPU
-        # backend is selected. PrivateDevices stays off so /dev/dri and /dev/kfd
-        # remain visible; the render nodes are allowed explicitly and the
-        # process is granted render/video supplementary groups.
-        PrivateDevices = lib.mkIf (cfg.gpuBackend != "cpu") false;
-        DeviceAllow = lib.mkIf (cfg.gpuBackend != "cpu") [
-          "/dev/dri rw"
-          "/dev/kfd rw"
-        ];
-        SupplementaryGroups =
-          lib.mkIf (cfg.gpuBackend != "cpu") [ "render" "video" ];
       };
 
       preStart = ''
@@ -303,12 +212,8 @@ in {
         mkdir -p ${cfg.dataDir}/tmux
         mkdir -p ${cfg.dataDir}/logs
 
-        # Create the mutable venv linked to the immutable nixpkgs env.
-        # --seed installs pip/setuptools into the venv so the cookbook runner
-        # scripts' `python3 -m pip install` works inside it. --system-site-
-        # packages lets it import everything from the nixpkgs base env too.
         if [ ! -d "${cfg.dataDir}/venv" ]; then
-          echo "Creating mutable venv (system-site-packages -> nixpkgs env, seeded with pip)..."
+          echo "Creating mutable venv..."
           ${pkgs.uv}/bin/uv venv \
             --python ${pythonEnv}/bin/python \
             --system-site-packages \
@@ -316,17 +221,20 @@ in {
             ${cfg.dataDir}/venv
         fi
 
-        # Install packages missing from nixpkgs (+ whisper if enabled).
-        # Idempotent: uv skips already-satisfied packages quickly.
-        echo "Ensuring bootstrap packages: ${bootstrapArgs}"
+        echo "Installing pinned bootstrap packages..."
         ${pkgs.uv}/bin/uv pip install \
           --python "${cfg.dataDir}/venv/bin/python" \
-          ${bootstrapArgs} || \
-          echo "WARNING: bootstrap package install failed (will retry next start)"
+          --require-hashes \
+          -r ${./requirements.lock}
 
-        # First-time app setup: DB, data dirs, auth.json.
-        # Run from the venv python (system-site-packages gives it the core
-        # deps; being a venv keeps behaviour consistent with the main service).
+        ${lib.optionalString cfg.optionalDeps.whisper ''
+          echo "Installing faster-whisper..."
+          ${pkgs.uv}/bin/uv pip install \
+            --python "${cfg.dataDir}/venv/bin/python" \
+            --require-hashes \
+            -r ${./requirements-whisper.lock}
+        ''}
+
         if [ ! -f "${cfg.dataDir}/app.db" ]; then
           echo "Running first-time Odysseus setup..."
           PYTHONPATH="${package}/lib/odysseus:${cfg.dataDir}/venv/lib/python3.12/site-packages" \
