@@ -216,8 +216,6 @@ in {
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/tmux
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/logs
 
-        export VIRTUAL_ENV="${cfg.dataDir}/venv"
-
         if [ ! -f "${cfg.dataDir}/venv/pyvenv.cfg" ]; then
           echo "Creating mutable venv..."
           rm -rf "${cfg.dataDir}/venv"
@@ -231,12 +229,14 @@ in {
 
         echo "Installing pinned bootstrap packages..."
         ${pkgs.uv}/bin/uv pip install \
+          --python "${cfg.dataDir}/venv" \
           --require-hashes \
           -r ${./requirements.lock}
 
         ${lib.optionalString cfg.optionalDeps.whisper ''
           echo "Installing faster-whisper..."
           ${pkgs.uv}/bin/uv pip install \
+            --python "${cfg.dataDir}/venv" \
             --require-hashes \
             -r ${./requirements-whisper.lock}
         ''}
