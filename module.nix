@@ -216,7 +216,9 @@ in {
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/tmux
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/logs
 
-        if [ ! -f "${cfg.dataDir}/venv/pyvenv.cfg" ]; then
+        # Recreate if missing or if previously created by uv (uv sets creator=uv in pyvenv.cfg)
+        if [ ! -f "${cfg.dataDir}/venv/pyvenv.cfg" ] || \
+           grep -q "^creator = uv" "${cfg.dataDir}/venv/pyvenv.cfg" 2>/dev/null; then
           echo "Creating mutable venv..."
           rm -rf "${cfg.dataDir}/venv"
           ${pythonEnv}/bin/python -m venv \
@@ -225,16 +227,16 @@ in {
           chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/venv
         fi
 
-        rm -f "${cfg.dataDir}/venv/lib/python3.12/EXTERNALLY-MANAGED"
-
         echo "Installing pinned bootstrap packages..."
         "${cfg.dataDir}/venv/bin/python" -m pip install \
+          --break-system-packages \
           --require-hashes \
           -r ${./requirements.lock}
 
         ${lib.optionalString cfg.optionalDeps.whisper ''
           echo "Installing faster-whisper..."
           "${cfg.dataDir}/venv/bin/python" -m pip install \
+            --break-system-packages \
             --require-hashes \
             -r ${./requirements-whisper.lock}
         ''}
