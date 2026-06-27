@@ -212,25 +212,25 @@ in {
         mkdir -p ${cfg.dataDir}/tmux
         mkdir -p ${cfg.dataDir}/logs
 
+        export VIRTUAL_ENV="${cfg.dataDir}/venv"
+
         if [ ! -d "${cfg.dataDir}/venv" ]; then
           echo "Creating mutable venv..."
           ${pkgs.uv}/bin/uv venv \
-            --python ${pythonEnv}/bin/python \
-            --system-site-packages \
-            --seed \
-            ${cfg.dataDir}/venv
+             --python ${pythonEnv}/bin/python \
+             --system-site-packages \
+             --seed \
+              ${cfg.dataDir}/venv
         fi
 
         echo "Installing pinned bootstrap packages..."
         ${pkgs.uv}/bin/uv pip install \
-          --python "${cfg.dataDir}/venv/bin/python" \
           --require-hashes \
           -r ${./requirements.lock}
 
         ${lib.optionalString cfg.optionalDeps.whisper ''
           echo "Installing faster-whisper..."
           ${pkgs.uv}/bin/uv pip install \
-            --python "${cfg.dataDir}/venv/bin/python" \
             --require-hashes \
             -r ${./requirements-whisper.lock}
         ''}
@@ -239,7 +239,7 @@ in {
           echo "Running first-time Odysseus setup..."
           PYTHONPATH="${package}/lib/odysseus:${cfg.dataDir}/venv/lib/python3.12/site-packages" \
             "${cfg.dataDir}/venv/bin/python" \
-            ${package}/lib/odysseus/setup.py
+             ${package}/lib/odysseus/setup.py
         fi
       '';
     };
