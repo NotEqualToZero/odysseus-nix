@@ -219,24 +219,20 @@ in {
         if [ ! -f "${cfg.dataDir}/venv/pyvenv.cfg" ]; then
           echo "Creating mutable venv..."
           rm -rf "${cfg.dataDir}/venv"
-          ${pkgs.uv}/bin/uv venv \
-            --python ${pythonEnv}/bin/python \
+          ${pythonEnv}/bin/python -m venv \
             --system-site-packages \
-            --seed \
             ${cfg.dataDir}/venv
           chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/venv
         fi
 
         echo "Installing pinned bootstrap packages..."
-        ${pkgs.uv}/bin/uv pip install \
-          --python "${cfg.dataDir}/venv" \
+        "${cfg.dataDir}/venv/bin/python" -m pip install \
           --require-hashes \
           -r ${./requirements.lock}
 
         ${lib.optionalString cfg.optionalDeps.whisper ''
           echo "Installing faster-whisper..."
-          ${pkgs.uv}/bin/uv pip install \
-            --python "${cfg.dataDir}/venv" \
+          "${cfg.dataDir}/venv/bin/python" -m pip install \
             --require-hashes \
             -r ${./requirements-whisper.lock}
         ''}
