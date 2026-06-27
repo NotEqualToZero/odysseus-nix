@@ -207,20 +207,26 @@ in {
       };
 
       preStart = ''
-        chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir} || true
         mkdir -p ${cfg.dataDir}/.cache/huggingface/hub
         mkdir -p ${cfg.dataDir}/tmux
         mkdir -p ${cfg.dataDir}/logs
 
+        chown ${cfg.user}:${cfg.group} ${cfg.dataDir}
+        chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/.cache
+        chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/tmux
+        chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/logs
+
         export VIRTUAL_ENV="${cfg.dataDir}/venv"
 
-        if [ ! -d "${cfg.dataDir}/venv" ]; then
+        if [ ! -f "${cfg.dataDir}/venv/pyvenv.cfg" ]; then
           echo "Creating mutable venv..."
+          rm -rf "${cfg.dataDir}/venv"
           ${pkgs.uv}/bin/uv venv \
-             --python ${pythonEnv}/bin/python \
-             --system-site-packages \
-             --seed \
-              ${cfg.dataDir}/venv
+            --python ${pythonEnv}/bin/python \
+            --system-site-packages \
+            --seed \
+            ${cfg.dataDir}/venv
+          chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/venv
         fi
 
         echo "Installing pinned bootstrap packages..."
@@ -239,7 +245,7 @@ in {
           echo "Running first-time Odysseus setup..."
           PYTHONPATH="${package}/lib/odysseus:${cfg.dataDir}/venv/lib/python3.12/site-packages" \
             "${cfg.dataDir}/venv/bin/python" \
-             ${package}/lib/odysseus/setup.py
+            ${package}/lib/odysseus/setup.py
         fi
       '';
     };
