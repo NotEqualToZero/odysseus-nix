@@ -225,7 +225,7 @@ in {
         ExecStart = pkgs.writeShellScript "odysseus-start" ''
           VENV_SITE="${cfg.dataDir}/venv/lib/python3.12/site-packages"
           export VIRTUAL_ENV="${cfg.dataDir}/venv"
-          export PATH="${cfg.dataDir}/venv/bin:${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${pythonEnv}/bin${lib.optionalString (cfg.backendPackages != []) ":${backendBinPaths}"}:/run/current-system/sw/bin:$PATH"
+          export PATH="${cfg.dataDir}/wrappers:${cfg.dataDir}/venv/bin:${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${pythonEnv}/bin${lib.optionalString (cfg.backendPackages != []) ":${backendBinPaths}"}:/run/current-system/sw/bin:$PATH"
           export PYTHONPATH="${package}/lib/odysseus:$VENV_SITE:${pythonEnv}/lib/python3.12/site-packages"
           exec "${cfg.dataDir}/venv/bin/python" -m uvicorn app:app \
             --host ${cfg.host} \
@@ -271,6 +271,18 @@ in {
         # Regenerate .gpu_env so BASH_ENV picks up current nix store paths after rebuild
         echo "export LD_LIBRARY_PATH=${ldLibraryPath}:''${LD_LIBRARY_PATH:-}" > "${cfg.dataDir}/.gpu_env"
         chown ${cfg.user}:${cfg.group} "${cfg.dataDir}/.gpu_env"
+
+        # vllm wrapper: bakes LD_LIBRARY_PATH directly into the script so the correct
+        # GPU libs (libdrm, amdsmi) are loaded regardless of how the caller's env looks.
+        # Placed in wrappers/ which is prepended to PATH, so it intercepts all vllm calls.
+        mkdir -p "${cfg.dataDir}/wrappers"
+        cat > "${cfg.dataDir}/wrappers/vllm" <<'VLLMWRAPPER'
+#!/bin/sh
+export LD_LIBRARY_PATH="${ldLibraryPath}:''${LD_LIBRARY_PATH:-}"
+exec "${cfg.dataDir}/venv/bin/vllm" "$@"
+VLLMWRAPPER
+        chmod +x "${cfg.dataDir}/wrappers/vllm"
+        chown -R ${cfg.user}:${cfg.group} "${cfg.dataDir}/wrappers"
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/tmux
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/logs
 
