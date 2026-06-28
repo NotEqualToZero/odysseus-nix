@@ -192,6 +192,16 @@ in {
       ln -sf ${pkgs.bash}/bin/bash /bin/bash
     '';
 
+    # pip-installed amdsmi checks /opt/rocm/lib/libamd_smi.so as its primary load path
+    # (hardcoded in the PyPI package). Symlinking the nixpkgs library there means any
+    # Python process — including ones without LD_LIBRARY_PATH — can find it.
+    system.activationScripts.odysseusRocmLibs = lib.mkIf
+      (pkgs ? rocmPackages && pkgs.rocmPackages ? amdsmi)
+      ''
+        mkdir -p /opt/rocm/lib
+        ln -sf ${pkgs.rocmPackages.amdsmi}/lib/libamd_smi.so /opt/rocm/lib/libamd_smi.so
+      '';
+
     environment.systemPackages = [ pkgs.tmux pkgs.uv ] ++ cfg.backendPackages;
 
     systemd.services.odysseus = {
