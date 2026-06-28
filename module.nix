@@ -210,6 +210,10 @@ in {
         HF_HUB_CACHE               = "${cfg.dataDir}/.cache/huggingface/hub";
         VIRTUAL_ENV                = "${cfg.dataDir}/venv";
         LD_LIBRARY_PATH            = ldLibraryPath;
+        # Bash sources $BASH_ENV for every non-interactive invocation, so tmux-spawned
+        # cookbook commands (bash -c "vllm serve ...") inherit LD_LIBRARY_PATH even
+        # when the shell doesn't source .bashrc or .profile.
+        BASH_ENV                   = "${cfg.dataDir}/.gpu_env";
       } // cfg.extraEnv;
 
       serviceConfig = {
@@ -263,6 +267,10 @@ in {
 
         chown ${cfg.user}:${cfg.group} ${cfg.dataDir}
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/.cache
+
+        # Regenerate .gpu_env so BASH_ENV picks up current nix store paths after rebuild
+        echo "export LD_LIBRARY_PATH=${ldLibraryPath}:''${LD_LIBRARY_PATH:-}" > "${cfg.dataDir}/.gpu_env"
+        chown ${cfg.user}:${cfg.group} "${cfg.dataDir}/.gpu_env"
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/tmux
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/logs
 
