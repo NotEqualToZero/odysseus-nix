@@ -48,7 +48,7 @@ let
       "${pkgs.stdenv.cc.cc.lib}/lib"  # libstdc++.so.6
       "/run/opengl-driver/lib"
       "${pkgs.libdrm}/lib"            # libdrm_amdgpu.so.1 (Triton/ROCm)
-      "${pkgs.zstd.lib}/lib"          # libzstd.so.1 (ROCm torch)
+      "${lib.getLib pkgs.zstd}/lib"    # libzstd.so.1 (ROCm torch)
       "${pkgs.zlib}/lib"              # libz.so.1 (pytorch-triton-rocm _C extension)
       amdSmiLib
     ] ++ cfg.extraLibPaths
@@ -322,7 +322,7 @@ VLLMWRAPPER
         TORCH_LIB="$VENV_SITE/torch/lib"
         if [ -d "$TORCH_LIB" ]; then
           ln -sf ${pkgs.stdenv.cc.cc.lib}/lib/libstdc++.so.6 "$TORCH_LIB/libstdc++.so.6"
-          ln -sf ${pkgs.zstd.lib}/lib/libzstd.so.1           "$TORCH_LIB/libzstd.so.1"
+          ln -sf ${lib.getLib pkgs.zstd}/lib/libzstd.so.1     "$TORCH_LIB/libzstd.so.1"
           ln -sf ${pkgs.zlib}/lib/libz.so.1                  "$TORCH_LIB/libz.so.1"
           ln -sf ${pkgs.libdrm}/lib/libdrm_amdgpu.so.1       "$TORCH_LIB/libdrm_amdgpu.so.1"
         fi
@@ -376,7 +376,7 @@ VLLMWRAPPER
                 --index-url https://download.pytorch.org/whl/${cfg.rocmTorchIndex}
               TORCH_C="${cfg.dataDir}/venv/lib/python3.12/site-packages/torch"
               if [ -d "$TORCH_C" ]; then
-                EXTRA_RPATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.libdrm}/lib:${pkgs.zstd}/lib:/opt/rocm/lib"
+                EXTRA_RPATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.libdrm}/lib:${lib.getLib pkgs.zstd}/lib:/opt/rocm/lib"
                 find "$TORCH_C" -type f \( -name "*.so" -o -name "*.so.*" \) 2>/dev/null | while read -r so; do
                   ${pkgs.patchelf}/bin/patchelf --add-rpath "$EXTRA_RPATH" "$so" 2>/dev/null || true
                 done
