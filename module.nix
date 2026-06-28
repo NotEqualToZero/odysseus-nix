@@ -192,31 +192,12 @@ in {
       ln -sf ${pkgs.bash}/bin/bash /bin/bash
     '';
 
-    # Register GPU libraries in the ldconfig cache and expose libamd_smi.so at its
-    # hardcoded path. pip-installed torch/vllm call dlopen without LD_LIBRARY_PATH,
-    # so ldconfig is the only reliable discovery mechanism.
-    #
-    # Paths registered:
-    #   libstdc++.so.6  — required by torch C extensions
-    #   libdrm_amdgpu.so.1 — required by Triton DRM driver check
-    #   libamd_smi.so   — required by vLLM ROCm platform detection
-    system.activationScripts.odysseusGpuLibs = {
-      deps = [ "etc" ];
-      text = ''
-        ${lib.optionalString (pkgs ? rocmPackages && pkgs.rocmPackages ? amdsmi) ''
-          mkdir -p /opt/rocm/lib
-          ln -sf ${pkgs.rocmPackages.amdsmi}/lib/libamd_smi.so /opt/rocm/lib/libamd_smi.so
-        ''}
-
-        mkdir -p /etc/ld.so.conf.d
-        printf '%s\n' \
-          '${pkgs.stdenv.cc.cc.lib}/lib' \
-          '${pkgs.libdrm}/lib' \
-          '/opt/rocm/lib' \
-          > /etc/ld.so.conf.d/odysseus-gpu.conf
-        ${pkgs.glibc.out}/sbin/ldconfig
+    # Symlink libamd_smi.so to the path pip-installed amdsmi checks first.
+    system.activationScripts.odysseusGpuLibs =
+      lib.mkIf (pkgs ? rocmPackages && pkgs.rocmPackages ? amdsmi) ''
+        mkdir -p /opt/rocm/lib
+        ln -sf ${pkgs.rocmPackages.amdsmi}/lib/libamd_smi.so /opt/rocm/lib/libamd_smi.so
       '';
-    };
 
     environment.systemPackages = [ pkgs.tmux pkgs.uv ] ++ cfg.backendPackages;
 
@@ -309,6 +290,18 @@ exec "${cfg.dataDir}/venv/bin/vllm" "$@"
 VLLMWRAPPER
         chmod +x "${cfg.dataDir}/wrappers/vllm"
         chown -R ${cfg.user}:${cfg.group} "${cfg.dataDir}/wrappers"
+
+        # Patch torch's C extension RPATH so it finds libstdc++/libdrm without
+        # LD_LIBRARY_PATH (which doesn't reach the cookbook's inline Python exec).
+        # patchelf --add-rpath is safe and idempotent on repeated runs.
+        TORCH_C="${cfg.dataDir}/venv/lib/python3.12/site-packages/torch"
+        if [ -d "$TORCH_C" ]; then
+          EXTRA_RPATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.libdrm}/lib:/opt/rocm/lib"
+          find "$TORCH_C" -name "*.so" -o -name "*.so.*" 2>/dev/null | while read -r so; do
+            ${pkgs.patchelf}/bin/patchelf --add-rpath "$EXTRA_RPATH" "$so" 2>/dev/null || true
+          done
+        fi
+
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/tmux
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/logs
 
