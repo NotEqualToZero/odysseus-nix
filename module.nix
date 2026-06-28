@@ -49,6 +49,8 @@ let
       "/run/opengl-driver/lib"
       # libdrm_amdgpu.so.1 — needed by Triton/ROCm; not in opengl-driver on all configs
       "${pkgs.libdrm}/lib"
+      # libzstd.so.1 — needed by ROCm torch's libtorch_hip.so
+      "${pkgs.zstd}/lib"
       amdSmiLib
     ] ++ cfg.extraLibPaths
   );
@@ -363,7 +365,7 @@ VLLMWRAPPER
                 --index-url https://download.pytorch.org/whl/${cfg.rocmTorchIndex}
               TORCH_C="${cfg.dataDir}/venv/lib/python3.12/site-packages/torch"
               if [ -d "$TORCH_C" ]; then
-                EXTRA_RPATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.libdrm}/lib:/opt/rocm/lib"
+                EXTRA_RPATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.libdrm}/lib:${pkgs.zstd}/lib:/opt/rocm/lib"
                 find "$TORCH_C" -name "*.so" -o -name "*.so.*" 2>/dev/null | while read -r so; do
                   ${pkgs.patchelf}/bin/patchelf --add-rpath "$EXTRA_RPATH" "$so" 2>/dev/null || true
                 done
