@@ -147,6 +147,16 @@ in {
       '';
     };
 
+    rocmTorchIndex = lib.mkOption {
+      type    = lib.types.str;
+      default = "rocm6.2";
+      description = ''
+        PyTorch index suffix used when optionalDeps.rocm = true.
+        Passed as --index-url https://download.pytorch.org/whl/<value>.
+        Common values: rocm6.2, rocm6.1. Must match the ROCm version on the host.
+      '';
+    };
+
     optionalDeps = {
       whisper = lib.mkOption {
         type    = lib.types.bool;
@@ -167,6 +177,15 @@ in {
         type    = lib.types.bool;
         default = false;
         description = "Install markitdown for Office/EPUB extraction.";
+      };
+      rocm = lib.mkOption {
+        type    = lib.types.bool;
+        default = false;
+        description = ''
+          After vLLM is installed by the cookbook, replace the CUDA-variant torch with
+          the ROCm build for AMD GPU support. Uses rocmTorchIndex (default: rocm6.2).
+          On subsequent service starts, skips the reinstall if torch.version.hip is set.
+        '';
       };
     };
   };
@@ -328,6 +347,29 @@ VLLMWRAPPER
           "${cfg.dataDir}/venv/bin/python" -m pip install \
             --require-hashes \
             -r ${./requirements-whisper.lock}
+        ''}
+
+        ${lib.optionalString cfg.optionalDeps.rocm ''
+          if "${cfg.dataDir}/venv/bin/python" -c "import vllm" 2>/dev/null; then
+            HIP_CHECK=$("${cfg.dataDir}/venv/bin/python" -c "import torch; print(torch.version.hip or 'none')" 2>/dev/null || echo "none")
+            if [ "$HIP_CHECK" = "none" ]; then
+              echo "vLLM installed but torch has no HIP — replacing CUDA torch with ROCm build (${cfg.rocmTorchIndex})..."
+              "${cfg.dataDir}/venv/bin/python" -m pip uninstall -y \
+                torch torchvision torchaudio \
+                nvidia-cudnn-cu13 nvidia-cuda-runtime-cu13 nvidia-cuda-nvrtc-cu13 \
+                nvidia-nccl-cu13 nvidia-cublas-cu13 nvidia-cufft-cu13 nvidia-cusolver-cu13 \
+                nvidia-cusparse-cu13 nvidia-nvtx-cu13 nvidia-curand-cu13 2>/dev/null || true
+              "${cfg.dataDir}/venv/bin/python" -m pip install torch torchvision torchaudio \
+                --index-url https://download.pytorch.org/whl/${cfg.rocmTorchIndex}
+              TORCH_C="${cfg.dataDir}/venv/lib/python3.12/site-packages/torch"
+              if [ -d "$TORCH_C" ]; then
+                EXTRA_RPATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.libdrm}/lib:/opt/rocm/lib"
+                find "$TORCH_C" -name "*.so" -o -name "*.so.*" 2>/dev/null | while read -r so; do
+                  ${pkgs.patchelf}/bin/patchelf --add-rpath "$EXTRA_RPATH" "$so" 2>/dev/null || true
+                done
+              fi
+            fi
+          fi
         ''}
 
         if [ ! -f "${cfg.dataDir}/app.db" ]; then
