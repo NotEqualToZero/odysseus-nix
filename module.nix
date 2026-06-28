@@ -37,9 +37,17 @@ let
   # libstdc++ (always needed by pip-installed native extensions like torch/vllm)
   # plus /run/opengl-driver/lib which NixOS populates for all GPU vendors via
   # hardware.opengl — covers AMD ROCm, Intel compute, and NVIDIA CUDA.
+  # amdsmi is included when available so pip-installed vLLM can find libamd_smi.so
+  # (its Python wrapper hardcodes /opt/rocm/lib which doesn't exist on NixOS).
+  amdSmiLib = lib.optionalString
+    (pkgs ? rocmPackages && pkgs.rocmPackages ? amdsmi)
+    "${pkgs.rocmPackages.amdsmi}/lib";
+
   ldLibraryPath = lib.concatStringsSep ":" (
-    [ "${pkgs.stdenv.cc.cc.lib}/lib"
+    lib.filter (s: s != "") [
+      "${pkgs.stdenv.cc.cc.lib}/lib"
       "/run/opengl-driver/lib"
+      amdSmiLib
     ] ++ cfg.extraLibPaths
   );
 
