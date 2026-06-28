@@ -34,8 +34,13 @@ let
   backendBinPaths = lib.concatStringsSep ":"
     (map (p: "${p}/bin") cfg.backendPackages);
 
+  # libstdc++ (always needed by pip-installed native extensions like torch/vllm)
+  # plus /run/opengl-driver/lib which NixOS populates for all GPU vendors via
+  # hardware.opengl — covers AMD ROCm, Intel compute, and NVIDIA CUDA.
   ldLibraryPath = lib.concatStringsSep ":" (
-    [ "${pkgs.stdenv.cc.cc.lib}/lib" ] ++ cfg.extraLibPaths
+    [ "${pkgs.stdenv.cc.cc.lib}/lib"
+      "/run/opengl-driver/lib"
+    ] ++ cfg.extraLibPaths
   );
 
 in {
@@ -123,11 +128,12 @@ in {
     extraLibPaths = lib.mkOption {
       type    = lib.types.listOf lib.types.str;
       default = [];
-      example = lib.literalExpression ''[ "/run/opengl-driver/lib" ]'';
+      example = lib.literalExpression ''[ "\${pkgs.cudaPackages.cudatoolkit}/lib" ]'';
       description = ''
         Extra paths appended to LD_LIBRARY_PATH inside the service.
-        libstdc++ is always included. Add GPU runtime paths here if needed,
-        e.g. "/run/opengl-driver/lib" for ROCm/Vulkan on AMD.
+        libstdc++ and /run/opengl-driver/lib are always included (covers
+        AMD ROCm, Intel, and NVIDIA via hardware.opengl). Use this for
+        anything vendor-specific not covered by the opengl-driver path.
       '';
     };
 
@@ -158,12 +164,14 @@ in {
   config = lib.mkIf cfg.enable {
 
     users.users.${cfg.user} = {
-      isNormalUser = true;
-      home         = cfg.dataDir;
-      createHome   = true;
-      group        = cfg.group;
-      shell        = pkgs.bash;
-      description  = "Odysseus service user";
+      isNormalUser  = true;
+      home          = cfg.dataDir;
+      createHome    = true;
+      group         = cfg.group;
+      # render + video give access to /dev/dri (all GPU vendors) and /dev/kfd (AMD ROCm)
+      extraGroups   = [ "render" "video" ];
+      shell         = pkgs.bash;
+      description   = "Odysseus service user";
     };
 
     users.groups.${cfg.group} = {};
@@ -217,9 +225,25 @@ in {
 
         NoNewPrivileges = true;
         PrivateTmp      = false;
+        PrivateDevices  = false;   # must be false to reach GPU nodes
         ProtectSystem   = "strict";
         ReadWritePaths  = [ cfg.dataDir "/tmp" ];
         ProtectHome     = true;
+        # Allow access to GPU devices across vendors:
+        #   /dev/dri/*        — DRM render nodes (AMD/Intel/NVIDIA)
+        #   /dev/kfd          — AMD ROCm compute
+        #   /dev/nvidia*      — NVIDIA GPU + UVM + control
+        DeviceAllow = [
+          "char-drm:* rw"
+          "/dev/kfd rw"
+          "/dev/nvidiactl rw"
+          "/dev/nvidia-uvm rw"
+          "/dev/nvidia-uvm-tools rw"
+          "/dev/nvidia0 rw"
+          "/dev/nvidia1 rw"
+          "/dev/nvidia2 rw"
+          "/dev/nvidia3 rw"
+        ];
       };
 
       preStart = ''
