@@ -188,7 +188,7 @@ in {
           VENV_SITE="${cfg.dataDir}/venv/lib/python3.12/site-packages"
           export VIRTUAL_ENV="${cfg.dataDir}/venv"
           export PATH="${cfg.dataDir}/venv/bin:${package}/bin:${pkgs.uv}/bin:${pkgs.tmux}/bin:${pythonEnv}/bin${lib.optionalString (cfg.backendPackages != []) ":${backendBinPaths}"}:/run/current-system/sw/bin:$PATH"
-          export PYTHONPATH="${package}/lib/odysseus:$VENV_SITE"
+          export PYTHONPATH="${package}/lib/odysseus:$VENV_SITE:${pythonEnv}/lib/python3.12/site-packages"
           exec "${cfg.dataDir}/venv/bin/python" -m uvicorn app:app \
             --host ${cfg.host} \
             --port ${toString cfg.port}
@@ -216,36 +216,34 @@ in {
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/tmux
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/logs
 
-        # Recreate if missing or if previously created by uv (uv sets creator=uv in pyvenv.cfg)
+        # Recreate if missing or if previously created with --system-site-packages or uv
+        # (we now use an isolated venv and expose nixpkgs packages via PYTHONPATH instead)
         if [ ! -f "${cfg.dataDir}/venv/pyvenv.cfg" ] || \
-           grep -q "^creator = uv" "${cfg.dataDir}/venv/pyvenv.cfg" 2>/dev/null; then
+           grep -q "^creator = uv\|^include-system-site-packages = true" "${cfg.dataDir}/venv/pyvenv.cfg" 2>/dev/null; then
           echo "Creating mutable venv..."
           rm -rf "${cfg.dataDir}/venv"
-          ${pythonEnv}/bin/python -m venv \
-            --system-site-packages \
-            ${cfg.dataDir}/venv
+          ${pythonEnv}/bin/python -m venv ${cfg.dataDir}/venv
           chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/venv
         fi
 
+        # Remove EXTERNALLY-MANAGED so cookbook pip installs work at runtime
+        rm -f "${cfg.dataDir}/venv/lib/python3.12/EXTERNALLY-MANAGED"
+
         echo "Installing pinned bootstrap packages..."
         "${cfg.dataDir}/venv/bin/python" -m pip install \
-          --break-system-packages \
-          --ignore-installed \
           --require-hashes \
           -r ${./requirements.lock}
 
         ${lib.optionalString cfg.optionalDeps.whisper ''
           echo "Installing faster-whisper..."
           "${cfg.dataDir}/venv/bin/python" -m pip install \
-            --break-system-packages \
-            --ignore-installed \
             --require-hashes \
             -r ${./requirements-whisper.lock}
         ''}
 
         if [ ! -f "${cfg.dataDir}/app.db" ]; then
           echo "Running first-time Odysseus setup..."
-          PYTHONPATH="${package}/lib/odysseus:${cfg.dataDir}/venv/lib/python3.12/site-packages" \
+          PYTHONPATH="${package}/lib/odysseus:${cfg.dataDir}/venv/lib/python3.12/site-packages:${pythonEnv}/lib/python3.12/site-packages" \
             "${cfg.dataDir}/venv/bin/python" \
             ${package}/lib/odysseus/setup.py
         fi
