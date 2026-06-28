@@ -34,23 +34,22 @@ let
   backendBinPaths = lib.concatStringsSep ":"
     (map (p: "${p}/bin") cfg.backendPackages);
 
-  # libstdc++ (always needed by pip-installed native extensions like torch/vllm)
-  # plus /run/opengl-driver/lib which NixOS populates for all GPU vendors via
-  # hardware.opengl — covers AMD ROCm, Intel compute, and NVIDIA CUDA.
   # amdsmi is included when available so pip-installed vLLM can find libamd_smi.so
   # (its Python wrapper hardcodes /opt/rocm/lib which doesn't exist on NixOS).
   amdSmiLib = lib.optionalString
     (pkgs ? rocmPackages && pkgs.rocmPackages ? amdsmi)
     "${pkgs.rocmPackages.amdsmi}/lib";
 
+  # All host system libs needed by pip-installed GPU packages (torch, triton, vLLM).
+  # Added to LD_LIBRARY_PATH (propagates to service subprocesses) and also symlinked
+  # into package-specific dirs to satisfy $ORIGIN RPATH lookups without LD_LIBRARY_PATH.
   ldLibraryPath = lib.concatStringsSep ":" (
     lib.filter (s: s != "") [
-      "${pkgs.stdenv.cc.cc.lib}/lib"
+      "${pkgs.stdenv.cc.cc.lib}/lib"  # libstdc++.so.6
       "/run/opengl-driver/lib"
-      # libdrm_amdgpu.so.1 — needed by Triton/ROCm; not in opengl-driver on all configs
-      "${pkgs.libdrm}/lib"
-      # libzstd.so.1 — needed by ROCm torch's libtorch_hip.so
-      "${pkgs.zstd}/lib"
+      "${pkgs.libdrm}/lib"            # libdrm_amdgpu.so.1 (Triton/ROCm)
+      "${pkgs.zstd.lib}/lib"          # libzstd.so.1 (ROCm torch)
+      "${pkgs.zlib}/lib"              # libz.so.1 (pytorch-triton-rocm _C extension)
       amdSmiLib
     ] ++ cfg.extraLibPaths
   );
@@ -151,7 +150,7 @@ in {
 
     rocmTorchIndex = lib.mkOption {
       type    = lib.types.str;
-      default = "rocm6.2";
+      default = "rocm6.3";
       description = ''
         PyTorch index suffix used when optionalDeps.rocm = true.
         Passed as --index-url https://download.pytorch.org/whl/<value>.
@@ -296,8 +295,10 @@ in {
         chown ${cfg.user}:${cfg.group} ${cfg.dataDir}
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/.cache
 
-        # Regenerate .gpu_env so BASH_ENV picks up current nix store paths after rebuild
-        echo "export LD_LIBRARY_PATH=${ldLibraryPath}:''${LD_LIBRARY_PATH:-}" > "${cfg.dataDir}/.gpu_env"
+        # Regenerate .gpu_env so BASH_ENV picks up current nix store paths after rebuild.
+        # Do NOT append $LD_LIBRARY_PATH here — preStart runs inside the service environment,
+        # so appending it would cause exponential duplication on each restart.
+        echo "export LD_LIBRARY_PATH=${ldLibraryPath}" > "${cfg.dataDir}/.gpu_env"
         chown ${cfg.user}:${cfg.group} "${cfg.dataDir}/.gpu_env"
 
         # vllm wrapper: bakes LD_LIBRARY_PATH directly into the script so the correct
@@ -312,15 +313,24 @@ VLLMWRAPPER
         chmod +x "${cfg.dataDir}/wrappers/vllm"
         chown -R ${cfg.user}:${cfg.group} "${cfg.dataDir}/wrappers"
 
-        # Patch torch's C extension RPATH so it finds libstdc++/libdrm without
-        # LD_LIBRARY_PATH (which doesn't reach the cookbook's inline Python exec).
-        # patchelf --add-rpath is safe and idempotent on repeated runs.
-        TORCH_C="${cfg.dataDir}/venv/lib/python3.12/site-packages/torch"
-        if [ -d "$TORCH_C" ]; then
-          EXTRA_RPATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.libdrm}/lib:/opt/rocm/lib"
-          find "$TORCH_C" -name "*.so" -o -name "*.so.*" 2>/dev/null | while read -r so; do
-            ${pkgs.patchelf}/bin/patchelf --add-rpath "$EXTRA_RPATH" "$so" 2>/dev/null || true
-          done
+        # pip-installed GPU packages search $ORIGIN first for host system libs they don't
+        # bundle.  Symlink nixpkgs libs into each package's own lib dir so the $ORIGIN
+        # RPATH lookup succeeds without LD_LIBRARY_PATH.  Regenerated on each service
+        # start so links stay valid after NixOS rebuilds that change store hashes.
+        VENV_SITE="${cfg.dataDir}/venv/lib/python3.12/site-packages"
+        # torch/lib — searched by torch._C and libtorch_hip.so via $ORIGIN
+        TORCH_LIB="$VENV_SITE/torch/lib"
+        if [ -d "$TORCH_LIB" ]; then
+          ln -sf ${pkgs.stdenv.cc.cc.lib}/lib/libstdc++.so.6 "$TORCH_LIB/libstdc++.so.6"
+          ln -sf ${pkgs.zstd.lib}/lib/libzstd.so.1           "$TORCH_LIB/libzstd.so.1"
+          ln -sf ${pkgs.zlib}/lib/libz.so.1                  "$TORCH_LIB/libz.so.1"
+          ln -sf ${pkgs.libdrm}/lib/libdrm_amdgpu.so.1       "$TORCH_LIB/libdrm_amdgpu.so.1"
+        fi
+        # triton/_C — searched by _C.libtriton (pytorch-triton-rocm) via $ORIGIN
+        TRITON_C="$VENV_SITE/triton/_C"
+        if [ -d "$TRITON_C" ]; then
+          ln -sf ${pkgs.stdenv.cc.cc.lib}/lib/libstdc++.so.6 "$TRITON_C/libstdc++.so.6"
+          ln -sf ${pkgs.zlib}/lib/libz.so.1                  "$TRITON_C/libz.so.1"
         fi
 
         chown -R ${cfg.user}:${cfg.group} ${cfg.dataDir}/tmux
@@ -353,9 +363,10 @@ VLLMWRAPPER
 
         ${lib.optionalString cfg.optionalDeps.rocm ''
           if "${cfg.dataDir}/venv/bin/python" -c "import vllm" 2>/dev/null; then
-            HIP_CHECK=$("${cfg.dataDir}/venv/bin/python" -c "import torch; print(torch.version.hip or 'none')" 2>/dev/null || echo "none")
-            if [ "$HIP_CHECK" = "none" ]; then
-              echo "vLLM installed but torch has no HIP — replacing CUDA torch with ROCm build (${cfg.rocmTorchIndex})..."
+            # Reinstall if: CUDA build (no HIP), or torch lacks modules vLLM needs (version too old)
+            if ! "${cfg.dataDir}/venv/bin/python" -c \
+                "import torch, torch._inductor.custom_graph_pass; assert torch.version.hip" 2>/dev/null; then
+              echo "ROCm torch missing or incompatible with vLLM — installing (${cfg.rocmTorchIndex})..."
               "${cfg.dataDir}/venv/bin/python" -m pip uninstall -y \
                 torch torchvision torchaudio \
                 nvidia-cudnn-cu13 nvidia-cuda-runtime-cu13 nvidia-cuda-nvrtc-cu13 \
@@ -366,7 +377,7 @@ VLLMWRAPPER
               TORCH_C="${cfg.dataDir}/venv/lib/python3.12/site-packages/torch"
               if [ -d "$TORCH_C" ]; then
                 EXTRA_RPATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.libdrm}/lib:${pkgs.zstd}/lib:/opt/rocm/lib"
-                find "$TORCH_C" -name "*.so" -o -name "*.so.*" 2>/dev/null | while read -r so; do
+                find "$TORCH_C" -type f \( -name "*.so" -o -name "*.so.*" \) 2>/dev/null | while read -r so; do
                   ${pkgs.patchelf}/bin/patchelf --add-rpath "$EXTRA_RPATH" "$so" 2>/dev/null || true
                 done
               fi
