@@ -47,6 +47,8 @@ let
     lib.filter (s: s != "") [
       "${pkgs.stdenv.cc.cc.lib}/lib"
       "/run/opengl-driver/lib"
+      # libdrm_amdgpu.so.1 — needed by Triton/ROCm; not in opengl-driver on all configs
+      "${pkgs.libdrm}/lib"
       amdSmiLib
     ] ++ cfg.extraLibPaths
   );
