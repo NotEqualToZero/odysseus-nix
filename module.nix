@@ -34,6 +34,10 @@ let
   backendBinPaths = lib.concatStringsSep ":"
     (map (p: "${p}/bin") cfg.backendPackages);
 
+  ldLibraryPath = lib.concatStringsSep ":" (
+    [ "${pkgs.stdenv.cc.cc.lib}/lib" ] ++ cfg.extraLibPaths
+  );
+
 in {
 
   options.services.odysseus = {
@@ -116,6 +120,17 @@ in {
       '';
     };
 
+    extraLibPaths = lib.mkOption {
+      type    = lib.types.listOf lib.types.str;
+      default = [];
+      example = lib.literalExpression ''[ "/run/opengl-driver/lib" ]'';
+      description = ''
+        Extra paths appended to LD_LIBRARY_PATH inside the service.
+        libstdc++ is always included. Add GPU runtime paths here if needed,
+        e.g. "/run/opengl-driver/lib" for ROCm/Vulkan on AMD.
+      '';
+    };
+
     optionalDeps = {
       whisper = lib.mkOption {
         type    = lib.types.bool;
@@ -176,6 +191,7 @@ in {
         HF_HOME                    = "${cfg.dataDir}/.cache/huggingface";
         HF_HUB_CACHE               = "${cfg.dataDir}/.cache/huggingface/hub";
         VIRTUAL_ENV                = "${cfg.dataDir}/venv";
+        LD_LIBRARY_PATH            = ldLibraryPath;
       } // cfg.extraEnv;
 
       serviceConfig = {
