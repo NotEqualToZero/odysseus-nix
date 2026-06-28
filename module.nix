@@ -192,15 +192,31 @@ in {
       ln -sf ${pkgs.bash}/bin/bash /bin/bash
     '';
 
-    # pip-installed amdsmi checks /opt/rocm/lib/libamd_smi.so as its primary load path
-    # (hardcoded in the PyPI package). Symlinking the nixpkgs library there means any
-    # Python process — including ones without LD_LIBRARY_PATH — can find it.
-    system.activationScripts.odysseusRocmLibs = lib.mkIf
-      (pkgs ? rocmPackages && pkgs.rocmPackages ? amdsmi)
-      ''
-        mkdir -p /opt/rocm/lib
-        ln -sf ${pkgs.rocmPackages.amdsmi}/lib/libamd_smi.so /opt/rocm/lib/libamd_smi.so
+    # Register GPU libraries in the ldconfig cache and expose libamd_smi.so at its
+    # hardcoded path. pip-installed torch/vllm call dlopen without LD_LIBRARY_PATH,
+    # so ldconfig is the only reliable discovery mechanism.
+    #
+    # Paths registered:
+    #   libstdc++.so.6  — required by torch C extensions
+    #   libdrm_amdgpu.so.1 — required by Triton DRM driver check
+    #   libamd_smi.so   — required by vLLM ROCm platform detection
+    system.activationScripts.odysseusGpuLibs = {
+      deps = [ "etc" ];
+      text = ''
+        ${lib.optionalString (pkgs ? rocmPackages && pkgs.rocmPackages ? amdsmi) ''
+          mkdir -p /opt/rocm/lib
+          ln -sf ${pkgs.rocmPackages.amdsmi}/lib/libamd_smi.so /opt/rocm/lib/libamd_smi.so
+        ''}
+
+        mkdir -p /etc/ld.so.conf.d
+        printf '%s\n' \
+          '${pkgs.stdenv.cc.cc.lib}/lib' \
+          '${pkgs.libdrm}/lib' \
+          '/opt/rocm/lib' \
+          > /etc/ld.so.conf.d/odysseus-gpu.conf
+        ${pkgs.glibc.out}/sbin/ldconfig
       '';
+    };
 
     environment.systemPackages = [ pkgs.tmux pkgs.uv ] ++ cfg.backendPackages;
 
